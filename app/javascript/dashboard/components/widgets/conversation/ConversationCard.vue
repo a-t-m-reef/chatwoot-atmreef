@@ -24,6 +24,7 @@ const props = defineProps({
   showInboxName: { type: Boolean, default: false },
   hideThumbnail: { type: Boolean, default: false },
   compact: { type: Boolean, default: false },
+  hasDraft: { type: Boolean, default: false },
 });
 
 const emit = defineEmits([
@@ -168,6 +169,12 @@ watch(
         class="conversation--user text-sm my-0 mx-2 capitalize pt-0.5 text-ellipsis overflow-hidden whitespace-nowrap flex-1 min-w-0 ltr:pr-16 rtl:pl-16 text-n-slate-12"
         :class="hasUnread ? 'font-semibold' : 'font-medium'"
       >
+        <span
+          v-if="hasDraft"
+          class="font-medium normal-case text-n-ruby-11 ltr:mr-1 rtl:ml-1"
+        >
+          {{ $t('CHAT_LIST.DRAFT_PREFIX') }}
+        </span>
         {{ currentContact.name }}
       </h4>
       <VoiceCallStatus

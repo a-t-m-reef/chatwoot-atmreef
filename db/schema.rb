@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_06_16_120000) do
+ActiveRecord::Schema[7.1].define(version: 2026_10_27_120000) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -839,6 +839,23 @@ ActiveRecord::Schema[7.1].define(version: 2026_06_16_120000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["account_id"], name: "index_data_imports_on_account_id"
+  end
+
+  create_table "drafts", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.bigint "conversation_id", null: false
+    t.bigint "user_id", null: false
+    t.string "reply_type", default: "reply", null: false
+    t.text "content"
+    t.string "to_emails"
+    t.string "cc_emails"
+    t.string "bcc_emails"
+    t.bigint "in_reply_to_message_id"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_drafts_on_account_id"
+    t.index ["conversation_id", "user_id", "reply_type"], name: "index_drafts_on_conversation_id_and_user_id_and_reply_type", unique: true
+    t.index ["user_id", "account_id"], name: "index_drafts_on_user_id_and_account_id"
   end
 
   create_table "email_templates", force: :cascade do |t|

@@ -12,8 +12,52 @@ describe('#mutations', () => {
         message: 'Hey how ',
       });
       expect(state.records).toEqual({
-        'draft-32-REPLY': 'Hey how ',
+        'draft-32-REPLY': {
+          message: 'Hey how ',
+          updatedAt: expect.any(Number),
+        },
       });
+    });
+
+    it('upgrades a legacy string draft and keeps updatedAt when nothing changed', () => {
+      const state = {
+        records: { 'draft-32-REPLY': { message: 'Same', updatedAt: 50 } },
+      };
+      mutations[types.SET_DRAFT_MESSAGES](state, {
+        key: 'draft-32-REPLY',
+        message: 'Same',
+      });
+      expect(state.records['draft-32-REPLY'].updatedAt).toEqual(50);
+
+      const legacyState = { records: { 'draft-1-REPLY': 'Old text' } };
+      mutations[types.SET_DRAFT_MESSAGES](legacyState, {
+        key: 'draft-1-REPLY',
+        ccEmails: 'a@b.com',
+      });
+      expect(legacyState.records['draft-1-REPLY']).toEqual({
+        message: 'Old text',
+        ccEmails: 'a@b.com',
+        updatedAt: expect.any(Number),
+      });
+    });
+  });
+
+  describe('#SET_MY_DRAFT_CONVERSATION_IDS', () => {
+    it('sets the conversation ids', () => {
+      const state = { myDraftConversationIds: [] };
+      mutations[types.SET_MY_DRAFT_CONVERSATION_IDS](state, [1, 2]);
+      expect(state.myDraftConversationIds).toEqual([1, 2]);
+    });
+  });
+
+  describe('#SET_OTHER_DRAFTERS', () => {
+    it('sets the names per conversation', () => {
+      const state = { otherDrafters: {} };
+      mutations[types.SET_OTHER_DRAFTERS](state, {
+        conversationId: 4,
+        names: ['Kim'],
+      });
+      expect(state.otherDrafters).toEqual({ 4: ['Kim'] });
     });
   });
 
