@@ -3,61 +3,70 @@ import { mutations } from '../../draftMessages';
 
 describe('#mutations', () => {
   describe('#SET_DRAFT_MESSAGES', () => {
-    it('sets the draft messages', () => {
-      const state = {
-        records: {},
-      };
+    it('stores a new draft as an unsynced edit', () => {
+      const state = { records: {} };
       mutations[types.SET_DRAFT_MESSAGES](state, {
         key: 'draft-32-REPLY',
         message: 'Hey how ',
       });
       expect(state.records).toEqual({
-        'draft-32-REPLY': {
-          message: 'Hey how ',
-          updatedAt: expect.any(Number),
-        },
+        'draft-32-REPLY': { message: 'Hey how ', dirty: true },
       });
     });
 
-    it('upgrades a legacy string draft and keeps updatedAt when nothing changed', () => {
+    it('does not mark an unchanged save as an edit', () => {
       const state = {
-        records: { 'draft-32-REPLY': { message: 'Same', updatedAt: 50 } },
+        records: { 'draft-32-REPLY': { message: 'Same', dirty: false } },
       };
       mutations[types.SET_DRAFT_MESSAGES](state, {
         key: 'draft-32-REPLY',
         message: 'Same',
       });
-      expect(state.records['draft-32-REPLY'].updatedAt).toEqual(50);
+      expect(state.records['draft-32-REPLY'].dirty).toBe(false);
+    });
 
-      const legacyState = { records: { 'draft-1-REPLY': 'Old text' } };
-      mutations[types.SET_DRAFT_MESSAGES](legacyState, {
+    it('upgrades a legacy string draft', () => {
+      const state = { records: { 'draft-1-REPLY': 'Old text' } };
+      mutations[types.SET_DRAFT_MESSAGES](state, {
         key: 'draft-1-REPLY',
         ccEmails: 'a@b.com',
       });
-      expect(legacyState.records['draft-1-REPLY']).toEqual({
+      expect(state.records['draft-1-REPLY']).toEqual({
         message: 'Old text',
         ccEmails: 'a@b.com',
-        updatedAt: expect.any(Number),
+        dirty: true,
       });
     });
   });
 
-  describe('#SET_MY_DRAFT_CONVERSATION_IDS', () => {
-    it('sets the conversation ids', () => {
-      const state = { myDraftConversationIds: [] };
-      mutations[types.SET_MY_DRAFT_CONVERSATION_IDS](state, [1, 2]);
-      expect(state.myDraftConversationIds).toEqual([1, 2]);
-    });
-  });
-
-  describe('#SET_OTHER_DRAFTERS', () => {
-    it('sets the names per conversation', () => {
-      const state = { otherDrafters: {} };
-      mutations[types.SET_OTHER_DRAFTERS](state, {
-        conversationId: 4,
-        names: ['Kim'],
+  describe('#MARK_DRAFT_SYNCED', () => {
+    it('clears dirty and records the server time', () => {
+      const state = {
+        records: { 'draft-2-REPLY': { message: 'Hi', dirty: true } },
+      };
+      const snapshot = JSON.stringify(['Hi', '', '', '', '']);
+      mutations[types.MARK_DRAFT_SYNCED](state, {
+        key: 'draft-2-REPLY',
+        snapshot,
+        serverUpdatedAt: 300,
       });
-      expect(state.otherDrafters).toEqual({ 4: ['Kim'] });
+      expect(state.records['draft-2-REPLY']).toEqual({
+        message: 'Hi',
+        dirty: false,
+        serverUpdatedAt: 300,
+      });
+    });
+
+    it('keeps edits made while the save was in flight dirty', () => {
+      const state = {
+        records: { 'draft-3-REPLY': { message: 'Hi there', dirty: true } },
+      };
+      mutations[types.MARK_DRAFT_SYNCED](state, {
+        key: 'draft-3-REPLY',
+        snapshot: JSON.stringify(['Hi', '', '', '', '']),
+        serverUpdatedAt: 300,
+      });
+      expect(state.records['draft-3-REPLY'].dirty).toBe(true);
     });
   });
 

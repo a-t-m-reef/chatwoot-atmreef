@@ -21,10 +21,9 @@ const EMPTY_SNAPSHOT = '';
 const snapshotOf = draft =>
   JSON.stringify(SYNCED_FIELDS.map(field => draft[field] || ''));
 
-// What the server holds per draft key, so unchanged drafts are not sent again.
+// What the server holds per draft key, learned from the last fetch or sync.
+// A key with no entry is unknown, and an unknown server state is never overwritten.
 const serverSnapshots = {};
-
-const nowInSeconds = () => Math.floor(Date.now() / 1000);
 
 const fromServer = data => ({
   message: data.message || '',
@@ -32,7 +31,7 @@ const fromServer = data => ({
   ccEmails: data.cc_emails || '',
   bccEmails: data.bcc_emails || '',
   inReplyTo: data.in_reply_to || null,
-  updatedAt: data.updated_at,
+  serverUpdatedAt: data.updated_at,
 });
 
 const toApiReplyType = replyType => replyType.toLowerCase();
@@ -56,7 +55,14 @@ export const getters = {
     _state.otherDrafters[conversationId] || [],
 };
 
-const setMyDraft = ({ commit, state: $state }, conversationId, hasDraft) => {
+const setMyDraft = (
+  { commit, state: $state },
+  conversationId,
+  replyType,
+  hasDraft
+) => {
+  if (replyType !== REPLY_EDITOR_MODES.REPLY) return;
+
   const id = Number(conversationId);
   const others = $state.myDraftConversationIds.filter(
     existingId => existingId !== id
@@ -77,62 +83,100 @@ export const actions = {
   setReplyEditorMode: ({ commit }, { mode }) => {
     commit(types.SET_REPLY_EDITOR_MODE, { mode });
   },
-  // Pulls the agent's server draft. Returns true when it is newer than `since`
-  // (the local copy's updatedAt when the reply box opened) and replaced it.
-  fetch: async ({ commit }, { key, conversationId, replyType, since }) => {
+  // Reconciles the local copy with the agent's server draft. Returns true when the
+  // local copy changed, so the reply box should show it again.
+  fetch: async (context, { key, conversationId, replyType, isLocalEmpty }) => {
+    const { commit, state: $state } = context;
+    let data;
     try {
-      const { data } = await ConversationAPI.getDraft({
+      ({ data } = await ConversationAPI.getDraft({
         conversationId,
         replyType: toApiReplyType(replyType),
-      });
-      commit(types.SET_OTHER_DRAFTERS, {
-        conversationId,
-        names: data.other_drafters || [],
-      });
-      if (!data.has_draft) {
-        serverSnapshots[key] = EMPTY_SNAPSHOT;
-        return false;
-      }
-
-      const serverDraft = fromServer(data);
-      serverSnapshots[key] = snapshotOf(serverDraft);
-      if (serverDraft.updatedAt <= (since || 0)) return false;
-
-      commit(types.SET_DRAFT_MESSAGES, { key, ...serverDraft });
-      return true;
+      }));
     } catch (error) {
       return false;
     }
+    commit(types.SET_OTHER_DRAFTERS, {
+      conversationId,
+      names: data.other_drafters || [],
+    });
+
+    const localDraft = toDraft($state.records[key]);
+    if (!data.has_draft) {
+      serverSnapshots[key] = EMPTY_SNAPSHOT;
+      // It was on the server and this device has nothing new: it was sent or
+      // discarded elsewhere, so the stale local copy must not come back.
+      if (localDraft.serverUpdatedAt && !localDraft.dirty) {
+        commit(types.REMOVE_DRAFT_MESSAGES, { key });
+        return true;
+      }
+      return false;
+    }
+
+    const serverDraft = fromServer(data);
+    serverSnapshots[key] = snapshotOf(serverDraft);
+    setMyDraft(context, conversationId, replyType, true);
+    // Unsynced text typed on this device wins; it syncs over the server copy.
+    if (localDraft.dirty && !isLocalEmpty) return false;
+    if (
+      !isLocalEmpty &&
+      localDraft.serverUpdatedAt === serverDraft.serverUpdatedAt
+    ) {
+      return false;
+    }
+
+    commit(types.SET_DRAFT_MESSAGES, { key, ...serverDraft, dirty: false });
+    return true;
   },
-  // Pushes the local draft to the server, or deletes the server copy when the draft is empty.
+  // Pushes this device's edits to the server, or deletes the server copy when
+  // the agent emptied the draft. Does nothing until the server state is known.
   sync: async (context, { key, conversationId, replyType, isEmpty }) => {
     const draft = toDraft(context.state.records[key]);
+    const knownSnapshot = serverSnapshots[key];
+    if (knownSnapshot === undefined || !draft.dirty) return;
+
     const snapshot = isEmpty ? EMPTY_SNAPSHOT : snapshotOf(draft);
-    if (serverSnapshots[key] === snapshot) return;
+    if (knownSnapshot === snapshot) {
+      context.commit(types.MARK_DRAFT_SYNCED, { key, snapshot });
+      return;
+    }
 
     serverSnapshots[key] = snapshot;
     const params = { conversationId, replyType: toApiReplyType(replyType) };
     try {
       if (isEmpty) {
         await ConversationAPI.deleteDraft(params);
+        context.commit(types.MARK_DRAFT_SYNCED, {
+          key,
+          snapshot,
+          serverUpdatedAt: null,
+        });
       } else {
-        await ConversationAPI.saveDraft({ ...params, draft });
+        const { data } = await ConversationAPI.saveDraft({ ...params, draft });
+        context.commit(types.MARK_DRAFT_SYNCED, {
+          key,
+          snapshot,
+          serverUpdatedAt: data.updated_at,
+        });
       }
-      if (replyType === REPLY_EDITOR_MODES.REPLY) {
-        setMyDraft(context, conversationId, !isEmpty);
-      }
+      setMyDraft(context, conversationId, replyType, !isEmpty);
+    } catch (error) {
+      serverSnapshots[key] = knownSnapshot;
+    }
+  },
+  // The reply was sent: drop the draft here and on the server.
+  remove: async (context, { key, conversationId, replyType }) => {
+    context.commit(types.REMOVE_DRAFT_MESSAGES, { key });
+    serverSnapshots[key] = EMPTY_SNAPSHOT;
+    setMyDraft(context, conversationId, replyType, false);
+    try {
+      await ConversationAPI.deleteDraft({
+        conversationId,
+        replyType: toApiReplyType(replyType),
+      });
     } catch (error) {
       delete serverSnapshots[key];
     }
-  },
-  remove: async (context, { key, conversationId, replyType }) => {
-    context.commit(types.REMOVE_DRAFT_MESSAGES, { key });
-    await context.dispatch('sync', {
-      key,
-      conversationId,
-      replyType,
-      isEmpty: true,
-    });
   },
   fetchMine: async ({ commit }) => {
     try {
@@ -151,16 +195,32 @@ export const mutations = {
   [types.SET_DRAFT_MESSAGES]($state, { key, ...draft }) {
     const existing = toDraft($state.records[key]);
     const updated = { ...existing, ...draft };
-    // Only real edits move updatedAt, so re-saving an unchanged draft never beats a newer server copy.
-    if (!draft.updatedAt) {
-      updated.updatedAt =
-        snapshotOf(updated) === snapshotOf(existing) && existing.updatedAt
-          ? existing.updatedAt
-          : nowInSeconds();
+    // A change to the content is an edit this device has not synced yet.
+    if (draft.dirty === undefined) {
+      updated.dirty =
+        Boolean(existing.dirty) || snapshotOf(updated) !== snapshotOf(existing);
     }
     $state.records = {
       ...$state.records,
       [key]: updated,
+    };
+    LocalStorage.set(LOCAL_STORAGE_KEYS.DRAFT_MESSAGES, $state.records);
+  },
+  [types.MARK_DRAFT_SYNCED]($state, { key, snapshot, serverUpdatedAt }) {
+    const existing = $state.records[key];
+    if (!existing) return;
+
+    const draft = toDraft(existing);
+    const isEmptySync = snapshot === EMPTY_SNAPSHOT;
+    // Edits made while the request was in flight stay dirty.
+    const isCurrent = isEmptySync || snapshotOf(draft) === snapshot;
+    $state.records = {
+      ...$state.records,
+      [key]: {
+        ...draft,
+        dirty: isCurrent ? false : draft.dirty,
+        ...(serverUpdatedAt !== undefined && { serverUpdatedAt }),
+      },
     };
     LocalStorage.set(LOCAL_STORAGE_KEYS.DRAFT_MESSAGES, $state.records);
   },

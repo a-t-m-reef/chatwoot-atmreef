@@ -705,26 +705,28 @@ export default {
       this.getFromDraft();
       this.fetchServerDraft();
     },
-    // Another device may hold a newer copy. Apply it unless the agent has typed since opening.
+    // Another device may have changed, sent or discarded this draft. Show the
+    // reconciled copy unless the agent has typed since opening.
     async fetchServerDraft() {
       const conversationId = this.conversationIdByRoute;
       if (!conversationId) return;
 
       const replyType = this.replyType;
       const key = this.getDraftKey(conversationId, replyType);
-      const { updatedAt } = this.$store.getters['draftMessages/getDraft'](key);
       const messageBeforeFetch = this.message;
-      const hasNewerDraft = await this.$store.dispatch('draftMessages/fetch', {
+      const hasChanged = await this.$store.dispatch('draftMessages/fetch', {
         key,
         conversationId,
         replyType,
-        since: updatedAt,
+        isLocalEmpty: this.isDraftEmpty(
+          this.$store.getters['draftMessages/get'](key)
+        ),
       });
       const isUntouched =
         key === this.getDraftKey() && this.message === messageBeforeFetch;
-      if (hasNewerDraft && isUntouched) {
+      if (hasChanged && isUntouched) {
         this.getFromDraft();
-        this.applyDraftRecipients();
+        this.setCCAndToEmailsFromLastChat();
         this.applyDraftReplyTo();
       }
     },
@@ -735,14 +737,15 @@ export default {
       );
       return this.$store.getters['draftMessages/getDraft'](key);
     },
-    // A draft with text keeps the recipients the agent chose over the ones from the last email.
+    // A draft with text keeps the recipients the agent chose over the ones from
+    // the last email. Fields the draft never stored keep those defaults.
     applyDraftRecipients() {
-      const { message, toEmails, ccEmails, bccEmails } = this.replyDraft();
-      if (this.isDraftEmpty(message)) return;
+      const draft = this.replyDraft();
+      if (this.isDraftEmpty(draft.message)) return;
 
-      this.toEmails = toEmails || '';
-      this.ccEmails = ccEmails || '';
-      this.bccEmails = bccEmails || '';
+      ['toEmails', 'ccEmails', 'bccEmails'].forEach(field => {
+        if (draft[field] !== undefined) this[field] = draft[field];
+      });
     },
     applyDraftReplyTo() {
       const { inReplyTo } = this.replyDraft();

@@ -58,78 +58,129 @@ describe('#actions', () => {
       updated_at: 200,
       other_drafters: ['Kim'],
     };
-
-    it('applies a server draft newer than the local copy', async () => {
-      axios.get.mockResolvedValue({ data: serverDraft });
-
-      const result = await actions.fetch(
-        { commit },
-        {
-          key: 'draft-1-REPLY',
-          conversationId: 1,
-          replyType: 'REPLY',
-          since: 100,
-        }
+    const fetchFor = (records, key, isLocalEmpty) =>
+      actions.fetch(
+        { commit, state: { records, myDraftConversationIds: [] } },
+        { key, conversationId: 1, replyType: 'REPLY', isLocalEmpty }
       );
 
-      expect(result).toBe(true);
+    it('applies the server draft when this device has nothing', async () => {
+      axios.get.mockResolvedValue({ data: serverDraft });
+
+      const changed = await fetchFor({}, 'draft-f1-REPLY', true);
+
+      expect(changed).toBe(true);
       expect(axios.get).toHaveBeenCalledWith(
         expect.stringContaining('/conversations/1/draft_messages'),
         { params: { reply_type: 'reply' } }
       );
-      expect(commit.mock.calls).toEqual([
-        [types.SET_OTHER_DRAFTERS, { conversationId: 1, names: ['Kim'] }],
-        [
-          types.SET_DRAFT_MESSAGES,
-          {
-            key: 'draft-1-REPLY',
-            message: 'From laptop',
-            toEmails: 'to@b.com',
-            ccEmails: 'cc@b.com',
-            bccEmails: '',
-            inReplyTo: 9,
-            updatedAt: 200,
-          },
-        ],
-      ]);
+      expect(commit).toHaveBeenCalledWith(types.SET_OTHER_DRAFTERS, {
+        conversationId: 1,
+        names: ['Kim'],
+      });
+      expect(commit).toHaveBeenCalledWith(types.SET_DRAFT_MESSAGES, {
+        key: 'draft-f1-REPLY',
+        message: 'From laptop',
+        toEmails: 'to@b.com',
+        ccEmails: 'cc@b.com',
+        bccEmails: '',
+        inReplyTo: 9,
+        serverUpdatedAt: 200,
+        dirty: false,
+      });
     });
 
-    it('keeps the local copy when it is newer', async () => {
+    it('keeps unsynced text typed on this device', async () => {
       axios.get.mockResolvedValue({ data: serverDraft });
+      const records = { 'draft-f2-REPLY': { message: 'Typing', dirty: true } };
 
-      const result = await actions.fetch(
-        { commit },
-        {
-          key: 'draft-2-REPLY',
-          conversationId: 2,
-          replyType: 'REPLY',
-          since: 300,
-        }
+      expect(await fetchFor(records, 'draft-f2-REPLY', false)).toBe(false);
+      expect(commit).not.toHaveBeenCalledWith(
+        types.SET_DRAFT_MESSAGES,
+        expect.anything()
       );
+    });
 
-      expect(result).toBe(false);
-      expect(commit.mock.calls.map(([type]) => type)).toEqual([
-        types.SET_OTHER_DRAFTERS,
-      ]);
+    it('takes a newer server copy over a clean local copy', async () => {
+      axios.get.mockResolvedValue({ data: serverDraft });
+      const records = {
+        'draft-f3-REPLY': {
+          message: 'Old',
+          dirty: false,
+          serverUpdatedAt: 100,
+        },
+      };
+
+      expect(await fetchFor(records, 'draft-f3-REPLY', false)).toBe(true);
+    });
+
+    it('drops a synced local copy once the server draft is gone', async () => {
+      axios.get.mockResolvedValue({
+        data: { has_draft: false, other_drafters: [] },
+      });
+      const records = {
+        'draft-f4-REPLY': { message: 'hi', dirty: false, serverUpdatedAt: 100 },
+      };
+
+      expect(await fetchFor(records, 'draft-f4-REPLY', false)).toBe(true);
+      expect(commit).toHaveBeenCalledWith(types.REMOVE_DRAFT_MESSAGES, {
+        key: 'draft-f4-REPLY',
+      });
+    });
+
+    it('keeps a never-synced local draft when the server has none', async () => {
+      axios.get.mockResolvedValue({
+        data: { has_draft: false, other_drafters: [] },
+      });
+      const records = { 'draft-f5-REPLY': 'Legacy text' };
+
+      expect(await fetchFor(records, 'draft-f5-REPLY', false)).toBe(false);
+      expect(commit).not.toHaveBeenCalledWith(
+        types.REMOVE_DRAFT_MESSAGES,
+        expect.anything()
+      );
     });
   });
 
   describe('#sync', () => {
-    const state = {
-      records: { 'draft-5-REPLY': { message: 'Hello', ccEmails: 'c@d.com' } },
-      myDraftConversationIds: [],
-    };
+    const syncFor = (records, key, isEmpty) =>
+      actions.sync(
+        { commit, state: { records, myDraftConversationIds: [] } },
+        { key, conversationId: 5, replyType: 'REPLY', isEmpty }
+      );
 
-    it('saves a non-empty draft and marks the conversation', async () => {
-      axios.patch.mockResolvedValue({});
-      const params = {
-        key: 'draft-5-REPLY',
-        conversationId: 5,
-        replyType: 'REPLY',
-        isEmpty: false,
+    it('never touches the server before its state is known', async () => {
+      const records = { 'draft-s1-REPLY': { message: '', dirty: true } };
+
+      await syncFor(records, 'draft-s1-REPLY', true);
+
+      expect(axios.delete).not.toHaveBeenCalled();
+      expect(axios.patch).not.toHaveBeenCalled();
+    });
+
+    it('saves a dirty draft and marks it synced', async () => {
+      axios.get.mockResolvedValue({
+        data: { has_draft: false, other_drafters: [] },
+      });
+      axios.patch.mockResolvedValue({ data: { updated_at: 300 } });
+      const records = {
+        'draft-s2-REPLY': {
+          message: 'Hello',
+          ccEmails: 'c@d.com',
+          dirty: true,
+        },
       };
+      await actions.fetch(
+        { commit, state: { records, myDraftConversationIds: [] } },
+        {
+          key: 'draft-s2-REPLY',
+          conversationId: 5,
+          replyType: 'REPLY',
+          isLocalEmpty: false,
+        }
+      );
 
-      await actions.sync({ commit, state }, params);
+      await syncFor(records, 'draft-s2-REPLY', false);
 
       expect(axios.patch).toHaveBeenCalledWith(
         expect.stringContaining('/conversations/5/draft_messages'),
@@ -144,57 +195,72 @@ describe('#actions', () => {
           },
         }
       );
+      expect(commit).toHaveBeenCalledWith(types.MARK_DRAFT_SYNCED, {
+        key: 'draft-s2-REPLY',
+        snapshot: expect.any(String),
+        serverUpdatedAt: 300,
+      });
       expect(commit).toHaveBeenCalledWith(types.SET_MY_DRAFT_CONVERSATION_IDS, [
         5,
       ]);
-
-      // An unchanged draft is not sent again.
-      await actions.sync({ commit, state }, params);
-      expect(axios.patch).toHaveBeenCalledTimes(1);
     });
 
-    it('deletes the server copy of an empty draft', async () => {
-      axios.delete.mockResolvedValue({});
+    it('skips a draft with no edits from this device', async () => {
+      await syncFor(
+        { 'draft-s3-REPLY': { message: 'Hello', dirty: false } },
+        'draft-s3-REPLY',
+        false
+      );
 
-      await actions.sync(
-        { commit, state: { records: {}, myDraftConversationIds: [6] } },
+      expect(axios.patch).not.toHaveBeenCalled();
+    });
+
+    it('deletes the server copy when the agent empties a known draft', async () => {
+      axios.get.mockResolvedValue({
+        data: { has_draft: true, message: 'Hi', updated_at: 1 },
+      });
+      axios.delete.mockResolvedValue({});
+      const records = { 'draft-s4-REPLY': { message: '', dirty: true } };
+      await actions.fetch(
+        { commit, state: { records, myDraftConversationIds: [5] } },
         {
-          key: 'draft-6-REPLY',
-          conversationId: 6,
+          key: 'draft-s4-REPLY',
+          conversationId: 5,
           replyType: 'REPLY',
-          isEmpty: true,
+          isLocalEmpty: true,
         }
       );
+      records['draft-s4-REPLY'] = { message: '', dirty: true };
+
+      await syncFor(records, 'draft-s4-REPLY', true);
 
       expect(axios.delete).toHaveBeenCalledWith(
-        expect.stringContaining('/conversations/6/draft_messages'),
+        expect.stringContaining('/conversations/5/draft_messages'),
         { params: { reply_type: 'reply' } }
-      );
-      expect(commit).toHaveBeenCalledWith(
-        types.SET_MY_DRAFT_CONVERSATION_IDS,
-        []
       );
     });
   });
 
   describe('#remove', () => {
-    it('removes the local draft and syncs the deletion', async () => {
-      const dispatch = vi.fn();
-      const params = {
-        key: 'draft-7-NOTE',
-        conversationId: 7,
-        replyType: 'NOTE',
-      };
+    it('removes the local draft and deletes the server copy', async () => {
+      axios.delete.mockResolvedValue({});
 
-      await actions.remove({ commit, dispatch }, params);
+      await actions.remove(
+        { commit, state: { records: {}, myDraftConversationIds: [7] } },
+        { key: 'draft-7-REPLY', conversationId: 7, replyType: 'REPLY' }
+      );
 
       expect(commit).toHaveBeenCalledWith(types.REMOVE_DRAFT_MESSAGES, {
-        key: 'draft-7-NOTE',
+        key: 'draft-7-REPLY',
       });
-      expect(dispatch).toHaveBeenCalledWith('sync', {
-        ...params,
-        isEmpty: true,
-      });
+      expect(commit).toHaveBeenCalledWith(
+        types.SET_MY_DRAFT_CONVERSATION_IDS,
+        []
+      );
+      expect(axios.delete).toHaveBeenCalledWith(
+        expect.stringContaining('/conversations/7/draft_messages'),
+        { params: { reply_type: 'reply' } }
+      );
     });
   });
 

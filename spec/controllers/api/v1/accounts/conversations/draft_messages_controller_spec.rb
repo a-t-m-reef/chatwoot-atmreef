@@ -74,6 +74,15 @@ RSpec.describe 'Conversation Draft Messages API', type: :request do
       expect(response.parsed_body['other_drafters']).to eq([teammate.available_name])
     end
 
+    it 'does not name a drafter who has left the account' do
+      create(:draft, conversation: conversation, user: teammate, content: message)
+      teammate.account_users.find_by(account: account).destroy!
+
+      get draft_url, headers: agent.create_new_auth_token, as: :json
+
+      expect(response.parsed_body['other_drafters']).to eq([])
+    end
+
     it 'removes only the agent draft' do
       create(:draft, conversation: conversation, user: agent)
       create(:draft, conversation: conversation, user: teammate)

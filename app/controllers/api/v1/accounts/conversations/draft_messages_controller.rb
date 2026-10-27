@@ -8,6 +8,9 @@ class Api::V1::Accounts::Conversations::DraftMessagesController < Api::V1::Accou
     draft = @conversation.drafts.find_or_initialize_by(user: Current.user, reply_type: reply_type)
     draft.update!(draft_params)
     render json: draft_json(draft)
+  rescue ActiveRecord::RecordNotUnique
+    # Two tabs created the same draft at once; the retry finds the row the other one inserted.
+    retry
   end
 
   def destroy
@@ -22,7 +25,8 @@ class Api::V1::Accounts::Conversations::DraftMessagesController < Api::V1::Accou
   end
 
   def other_drafters
-    @conversation.drafts.replies.with_content.where.not(user: Current.user).includes(:user).map { |draft| draft.user.available_name }
+    @conversation.drafts.replies.with_content.where(user: Current.account.users).where.not(user: Current.user)
+                 .includes(:user).map { |draft| draft.user.available_name }
   end
 
   def draft_json(draft)
