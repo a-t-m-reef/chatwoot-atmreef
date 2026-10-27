@@ -57,6 +57,10 @@ import { isFileTypeAllowedForChannel } from 'shared/helpers/FileHelper';
 import { LOCAL_STORAGE_KEYS } from 'dashboard/constants/localStorage';
 import { LocalStorage } from 'shared/helpers/localStorage';
 import { emitter } from 'shared/helpers/mitt';
+// The local copy saves almost instantly; the server copy waits for a pause in typing.
+const DRAFT_LOCAL_SAVE_MS = 500;
+const DRAFT_SERVER_SYNC_MS = 2000;
+
 const EmojiInput = defineAsyncComponent(
   () => import('shared/components/emoji/EmojiInput.vue')
 );
@@ -124,6 +128,7 @@ export default {
       toEmails: '',
       selectedFromEmail: '',
       doAutoSaveDraft: () => {},
+      doSyncDraftToServer: () => {},
       showWhatsAppTemplatesModal: false,
       showContentTemplatesModal: false,
       updateEditorSelectionWith: '',
@@ -365,6 +370,17 @@ export default {
     conversationIdByRoute() {
       return this.conversationId;
     },
+    otherDraftersNotice() {
+      const names = this.$store.getters['draftMessages/getOtherDrafters'](
+        this.conversationIdByRoute
+      );
+      if (this.isOnPrivateNote || !names.length) return '';
+
+      return this.$t('CONVERSATION.REPLYBOX.OTHER_DRAFTERS', {
+        names: names.join(', '),
+        count: names.length,
+      });
+    },
     editorStateId() {
       return `draft-${this.conversationIdByRoute}-${this.replyType}`;
     },
@@ -486,22 +502,36 @@ export default {
     conversationIdByRoute(conversationId, oldConversationId) {
       if (conversationId !== oldConversationId) {
         this.setToDraft(oldConversationId, this.replyType);
-        this.getFromDraft();
+        this.syncDraftToServer(oldConversationId, this.replyType);
+        this.restoreDraft();
         this.resetRecorderAndClearAttachments();
       }
     },
     message() {
       // Autosave the current message draft.
-      this.doAutoSaveDraft();
+      this.onDraftChange();
+    },
+    toEmails() {
+      this.onDraftChange();
+    },
+    ccEmails() {
+      this.onDraftChange();
+    },
+    bccEmails() {
+      this.onDraftChange();
+    },
+    inReplyTo() {
+      this.onDraftChange();
     },
     replyType(updatedReplyType, oldReplyType) {
       this.setToDraft(this.conversationIdByRoute, oldReplyType);
-      this.getFromDraft();
+      this.syncDraftToServer(this.conversationIdByRoute, oldReplyType);
+      this.restoreDraft();
     },
   },
 
   mounted() {
-    this.getFromDraft();
+    this.restoreDraft();
     // Don't use the keyboard listener mixin here as the events here are supposed to be
     // working even if the editor is focussed.
     document.addEventListener('paste', this.onPaste);
@@ -512,9 +542,12 @@ export default {
       () => {
         this.saveDraft(this.conversationIdByRoute, this.replyType);
       },
-      500,
+      DRAFT_LOCAL_SAVE_MS,
       true
     );
+    this.doSyncDraftToServer = debounce(() => {
+      this.syncDraftToServer(this.conversationIdByRoute, this.replyType);
+    }, DRAFT_SERVER_SYNC_MS);
 
     this.fetchAndSetReplyTo();
     emitter.on(BUS_EVENTS.TOGGLE_REPLY_TO_MESSAGE, this.onReplyToMessage);
@@ -528,6 +561,10 @@ export default {
     );
     emitter.on(BUS_EVENTS.INSERT_INTO_NORMAL_EDITOR, this.addIntoEditor);
     emitter.on(CMD_AI_ASSIST, this.executeCopilotAction);
+  },
+  beforeUnmount() {
+    this.saveDraft(this.conversationIdByRoute, this.replyType);
+    this.syncDraftToServer(this.conversationIdByRoute, this.replyType);
   },
   unmounted() {
     document.removeEventListener('paste', this.onPaste);
@@ -611,16 +648,115 @@ export default {
       // Reset attached files
       this.attachedFiles = [];
     },
+    onDraftChange() {
+      this.doAutoSaveDraft();
+      this.doSyncDraftToServer();
+    },
     saveDraft(conversationId, replyType) {
       if (this.message || this.message === '') {
         const key = this.getDraftKey(conversationId, replyType);
         const draftToSave = trimContent(this.message || '', this.maxLength);
+        // Recipients on screen belong to the open conversation, so a save for the
+        // conversation being left keeps the recipients it already stored.
+        const isOpenEmailReply =
+          conversationId === this.conversationIdByRoute &&
+          replyType === REPLY_EDITOR_MODES.REPLY;
+        const recipients = isOpenEmailReply
+          ? {
+              toEmails: this.toEmails,
+              ccEmails: this.ccEmails,
+              bccEmails: this.bccEmails,
+              inReplyTo: this.inReplyTo?.id || null,
+            }
+          : {};
 
         this.$store.dispatch('draftMessages/set', {
           key,
           message: draftToSave,
+          ...recipients,
         });
       }
+    },
+    isDraftEmpty(message) {
+      const effectiveChannelType = getEffectiveChannelType(
+        this.channelType,
+        this.inbox?.medium || ''
+      );
+      return !removeSignature(
+        message || '',
+        this.messageSignature,
+        effectiveChannelType
+      ).trim();
+    },
+    syncDraftToServer(conversationId, replyType) {
+      if (!conversationId) return;
+
+      const key = this.getDraftKey(conversationId, replyType);
+      this.$store.dispatch('draftMessages/sync', {
+        key,
+        conversationId,
+        replyType,
+        isEmpty: this.isDraftEmpty(
+          this.$store.getters['draftMessages/get'](key)
+        ),
+      });
+    },
+    restoreDraft() {
+      this.getFromDraft();
+      this.fetchServerDraft();
+    },
+    // Another device may have changed, sent or discarded this draft. Show the
+    // reconciled copy unless the agent has typed since opening.
+    async fetchServerDraft() {
+      const conversationId = this.conversationIdByRoute;
+      if (!conversationId) return;
+
+      const replyType = this.replyType;
+      const key = this.getDraftKey(conversationId, replyType);
+      const messageBeforeFetch = this.message;
+      const hasChanged = await this.$store.dispatch('draftMessages/fetch', {
+        key,
+        conversationId,
+        replyType,
+        isLocalEmpty: this.isDraftEmpty(
+          this.$store.getters['draftMessages/get'](key)
+        ),
+      });
+      const isUntouched =
+        key === this.getDraftKey() && this.message === messageBeforeFetch;
+      if (hasChanged && isUntouched) {
+        this.getFromDraft();
+        this.setCCAndToEmailsFromLastChat();
+        this.applyDraftReplyTo();
+      }
+    },
+    replyDraft() {
+      const key = this.getDraftKey(
+        this.conversationIdByRoute,
+        REPLY_EDITOR_MODES.REPLY
+      );
+      return this.$store.getters['draftMessages/getDraft'](key);
+    },
+    // A draft with text keeps the recipients the agent chose over the ones from
+    // the last email. Fields the draft never stored keep those defaults.
+    applyDraftRecipients() {
+      const draft = this.replyDraft();
+      if (this.isDraftEmpty(draft.message)) return;
+
+      ['toEmails', 'ccEmails', 'bccEmails'].forEach(field => {
+        if (draft[field] !== undefined) this[field] = draft[field];
+      });
+    },
+    applyDraftReplyTo() {
+      const { inReplyTo } = this.replyDraft();
+      if (!inReplyTo || this.inReplyTo?.id) return;
+
+      LocalStorage.updateJsonStore(
+        LOCAL_STORAGE_KEYS.MESSAGE_REPLY_TO,
+        this.conversationId,
+        inReplyTo
+      );
+      this.fetchAndSetReplyTo();
     },
     setToDraft(conversationId, replyType) {
       this.saveDraft(conversationId, replyType);
@@ -659,7 +795,11 @@ export default {
     removeFromDraft() {
       if (this.conversationIdByRoute) {
         const key = this.getDraftKey();
-        this.$store.dispatch('draftMessages/delete', { key });
+        this.$store.dispatch('draftMessages/remove', {
+          key,
+          conversationId: this.conversationIdByRoute,
+          replyType: this.replyType,
+        });
       }
     },
     getElementToBind() {
@@ -1211,6 +1351,7 @@ export default {
       this.toEmails = to.join(', ');
       this.ccEmails = cc.join(', ');
       this.bccEmails = bcc.join(', ');
+      this.applyDraftRecipients();
     },
     setDefaultFromEmail() {
       const options = this.fromEmailOptions;
@@ -1292,6 +1433,9 @@ export default {
 
 <template>
   <ReplyBoxBanner :message="message" :is-on-private-note="isOnPrivateNote" />
+  <p v-if="otherDraftersNotice" class="px-4 py-1 my-0 text-xs text-n-slate-11">
+    {{ otherDraftersNotice }}
+  </p>
   <div ref="replyEditor" class="reply-box" :class="replyBoxClass">
     <ReplyTopPanel
       :mode="replyType"

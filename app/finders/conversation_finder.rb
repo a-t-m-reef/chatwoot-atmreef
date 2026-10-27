@@ -168,13 +168,14 @@ class ConversationFinder
 
   # Maps email-style folders onto the conversation model. Spam/trash are mutually
   # exclusive states stored in additional_attributes; sent/drafts are filter views.
+  # Drafts are private, so the folder only lists the current agent's own drafts.
   # The default (no folder, or inbox) hides spam/trash from the regular list.
   def filter_by_folder
     @conversations = case params[:folder]
                      when 'sent'   then @conversations.with_outgoing_email.not_spam_or_trash
                      when 'spam'   then @conversations.in_mail_folder('spam')
                      when 'trash'  then @conversations.in_mail_folder('trash')
-                     when 'drafts' then @conversations.none # TODO(phase-3): replace with .with_drafts once the Draft model exists
+                     when 'drafts' then @conversations.with_drafts_by(current_user).not_spam_or_trash
                      else @conversations.not_spam_or_trash
                      end
   end

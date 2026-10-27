@@ -84,6 +84,7 @@ class Conversation < ApplicationRecord
   scope :with_outgoing_email, -> { joins(:messages).where(messages: { message_type: :outgoing, private: false }).distinct }
   scope :in_mail_folder, ->(folder) { where("conversations.additional_attributes->>'mail_folder' = ?", folder) }
   scope :not_spam_or_trash, -> { where("COALESCE(conversations.additional_attributes->>'mail_folder', '') NOT IN ('spam', 'trash')") }
+  scope :with_drafts_by, ->(user) { where(id: Draft.replies.with_content.where(user: user).select(:conversation_id)) }
   scope :resolvable_not_waiting, lambda { |auto_resolve_after|
     return none if auto_resolve_after.to_i.zero?
 
@@ -112,6 +113,7 @@ class Conversation < ApplicationRecord
   belongs_to :campaign, optional: true
 
   has_many :mentions, dependent: :destroy_async
+  has_many :drafts, dependent: :delete_all
   has_many :messages, dependent: :destroy_async, autosave: true
   has_one :csat_survey_response, dependent: :destroy_async
   has_many :conversation_participants, dependent: :destroy_async

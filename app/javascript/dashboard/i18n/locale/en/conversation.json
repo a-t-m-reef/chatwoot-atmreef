@@ -209,6 +209,7 @@
       "WHATSAPP_TEMPLATES": "Whatsapp Templates"
     },
     "REPLYBOX": {
+      "OTHER_DRAFTERS": "{names} also has a draft reply here | {names} also have draft replies here",
       "REPLY": "Reply",
       "PRIVATE_NOTE": "Private Note",
       "SEND": "Send",

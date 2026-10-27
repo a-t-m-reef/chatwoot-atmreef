@@ -80,6 +80,9 @@ const showInboxName = computed(
   () => !activeInbox.value && inboxesList.value.length > 1
 );
 const isInboxView = computed(() => !!activeInbox.value);
+const hasDraft = computed(() =>
+  store.getters['draftMessages/hasMyDraft'](props.source.id)
+);
 const showAssigneeForExpandedCard = computed(
   () => props.showExpanded || props.showAssignee
 );
@@ -206,6 +209,7 @@ const onRestoreConversation = () => {
     :show-assignee="showAssigneeForExpandedCard"
     :show-inbox-name="showInboxName"
     :is-inbox-view="isInboxView"
+    :has-draft="hasDraft"
     @select-conversation="onExpandedSelect"
     @de-select-conversation="onExpandedSelect"
     @click="onCardClick"
@@ -223,6 +227,7 @@ const onRestoreConversation = () => {
     :is-active-chat="isActiveChat"
     :show-assignee="showAssignee"
     :show-inbox-name="showInboxName"
+    :has-draft="hasDraft"
     @click="onCardClick"
     @contextmenu="openContextMenu"
     @select-conversation="selectConversation"

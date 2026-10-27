@@ -137,6 +137,31 @@ class ConversationApi extends ApiClient {
     });
   }
 
+  getDraft({ conversationId, replyType }) {
+    return axios.get(`${this.url}/${conversationId}/draft_messages`, {
+      params: { reply_type: replyType },
+    });
+  }
+
+  saveDraft({ conversationId, replyType, draft }) {
+    return axios.patch(`${this.url}/${conversationId}/draft_messages`, {
+      reply_type: replyType,
+      draft_message: {
+        message: draft.message,
+        to_emails: draft.toEmails,
+        cc_emails: draft.ccEmails,
+        bcc_emails: draft.bccEmails,
+        in_reply_to: draft.inReplyTo,
+      },
+    });
+  }
+
+  deleteDraft({ conversationId, replyType }) {
+    return axios.delete(`${this.url}/${conversationId}/draft_messages`, {
+      params: { reply_type: replyType },
+    });
+  }
+
   getAllAttachments(conversationId) {
     return axios.get(`${this.url}/${conversationId}/attachments`);
   }

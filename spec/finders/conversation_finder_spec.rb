@@ -216,6 +216,20 @@ describe ConversationFinder do
       end
     end
 
+    context 'with drafts folder' do
+      let(:params) { { folder: 'drafts', assignee_type: 'all', status: 'all' } }
+
+      it 'returns only conversations the current agent has a reply draft on' do
+        mine = account.conversations.first
+        create(:draft, conversation: mine, user: user_1)
+        create(:draft, conversation: account.conversations.second, user: user_2)
+        create(:draft, conversation: account.conversations.third, user: user_1, content: '')
+
+        result = conversation_finder.perform
+        expect(result[:conversations].map(&:id)).to eq([mine.id])
+      end
+    end
+
     context 'with unattended' do
       let(:params) { { status: 'open', assignee_type: 'me', conversation_type: 'unattended' } }
 

@@ -23,6 +23,7 @@ const props = defineProps({
   showAssignee: { type: Boolean, default: false },
   showInboxName: { type: Boolean, default: false },
   isInboxView: { type: Boolean, default: false },
+  hasDraft: { type: Boolean, default: false },
 });
 
 const emit = defineEmits([
@@ -147,6 +148,12 @@ const selectedModel = computed({
       <h4
         class="text-heading-3 my-0 capitalize truncate text-n-slate-12 font-medium w-32 flex-shrink-0"
       >
+        <span
+          v-if="hasDraft"
+          class="font-medium normal-case text-n-ruby-11 ltr:mr-1 rtl:ml-1"
+        >
+          {{ $t('CHAT_LIST.DRAFT_PREFIX') }}
+        </span>
         {{ currentContact.name }}
       </h4>
 
